@@ -1,4 +1,9 @@
 /*
+ * Copyright (c) 2026 Curtis Eubanks
+ * Licensed under the MIT License. See LICENSE in the project root for details.
+ */
+
+/*
  * Current version matching the Google Apps Deployment version.
  * Manually update immediate before deployment to keep in sync.
  */
