@@ -7,7 +7,7 @@
  * Current version matching the Google Apps Deployment version.
  * Manually update immediate before deployment to keep in sync.
  */
-const APP_VERSION = '0.22';
+const APP_VERSION = '0.24';
 
 /*
  * Habit Grid → JSON via Gemini
@@ -49,7 +49,7 @@ const APP_VERSION = '0.22';
  */
 
 // --- CONFIGURATION ---
-const GEMINI_API_KEY    =  PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+const GEMINI_API_KEY = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
 const SHEET_NAME_WEEKLY = 'Weekly View'; // Weekly grid tab
 const SHEET_NAME_HABITS = 'Habit List';  // Sheet containing Habit List Table
 
@@ -140,30 +140,29 @@ function parseMmDdYyyy(str) {
 }
 
 /*
- * Helper function to find the first instance of a date in a sheet
+ * Helper function to index all dates in the sheet for O(1) lookup.
+ * Returns a Map: time value (ms) -> {row, col}
  */
-function findFirstDateMatch(sheet, targetDate) {
-  const worksheetRange = sheet.getDataRange();
-  const cellValues = worksheetRange.getValues();
+function getDatesMap_(sheet) {
+  const map = new Map();
+  const range = sheet.getDataRange();
+  const values = range.getValues();
 
-  // Normalize target date to midnight
-  const t = new Date(targetDate);
-  t.setHours(0, 0, 0, 0);
-
-  for (let r = 0; r < cellValues.length; r++) {
-    for (let c = 0; c < cellValues[r].length; c++) {
-      const v = cellValues[r][c];
+  for (let r = 0; r < values.length; r++) {
+    for (let c = 0; c < values[r].length; c++) {
+      const v = values[r][c];
       if (v instanceof Date) {
         const d = new Date(v);
         d.setHours(0, 0, 0, 0);
-        if (d.getTime() === t.getTime()) {
-          // First match in current sheet
-          return { row: r + 1, column: c + 1 };
+        // Only store first occurrence if duplicates exist
+        const key = d.getTime();
+        if (!map.has(key)) {
+          map.set(key, { row: r + 1, column: c + 1 });
         }
       }
     }
   }
-  return null; // not found
+  return map;
 }
 
 /*
@@ -196,7 +195,7 @@ function doPost(e) {
     if (!e || !e.postData) {
       throw new Error('No data received');
     }
-    
+
     const raw = e.postData.contents;
     const postData = JSON.parse(raw);
 
@@ -214,7 +213,7 @@ function doPost(e) {
       base64Image = base64Image.base64 || base64Image.data || null;
       imgRefType = getType(base64Image);
     }
-    
+
     if (imgRefType !== 'string') {
       log_('doPost:image payload dump: ' + JSON.stringify(img).substring(0, 200));
       throw new Error(`base64Image has wrong type: ${imgRefType} instead of string`);
@@ -224,15 +223,15 @@ function doPost(e) {
       .replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '')
       .trim();
 
-    imgRefType = getType(base64Image); 
+    imgRefType = getType(base64Image);
     log_('doPost:NORM TYPE: ' + imgRefType +
-         ', NORM LEN: ' + String(base64Image || '').length);
-    
+      ', NORM LEN: ' + String(base64Image || '').length);
+
     // Normal processing
     const { habitNamesString, jsonTypesString, habitsArray } = getHabitMetadata();
-	  log_('doPost:habitsArray length: ' + habitsArray.length);
+    log_('doPost:habitsArray length: ' + habitsArray.length);
 
-	  const analysis = callGemini(base64Image, habitNamesString, jsonTypesString, habitsArray);
+    const analysis = callGemini(base64Image, habitNamesString, jsonTypesString, habitsArray);
 
     // Log the analysis results for a while for manual review
     log_('doPost:analysis JSON: ' + JSON.stringify(analysis, null, 2));
@@ -242,7 +241,7 @@ function doPost(e) {
     log_('doPost:updateSheet result: ' + result);
 
     return ContentService.createTextOutput(result);
-    
+
   } catch (error) {
     log_('doPost:ERROR: ' + error.toString());
     return ContentService.createTextOutput('Error: ' + error.toString());
@@ -280,23 +279,23 @@ function getHabitMetadata() {
   const habitNamesString = habitsArray
     .map(h => `'${h.name.replace(/'/g, '\\\'')}'`)
     .join(', ');
-  
+
   const jsonTypesString = habitsArray
     .map(h => `'${h.jsonType.replace(/'/g, '\\\'')}'`)
     .join(', ');
-  
+
   return { habitNamesString, jsonTypesString, habitsArray };
 }
 
 function callGemini(base64Image, habitNames, jsonTypes, habitsArray) {
   const MODEL = 'gemini-2.5-flash';
-  const url = `https://generativelanguage.googleapis.com/v1/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`; 
+  const url = `https://generativelanguage.googleapis.com/v1/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
   // *******************************************
   // *** POST-PROCESS OUTPUT SOLUTION (HACK) ***
   // *******************************************
   const promptText =
-`You are processing a handwritten weekly habit tracker grid.
+    `You are processing a handwritten weekly habit tracker grid.
 
 Tasks:
 1. Identify the "WEEK" start date (e.g., "12/28").
@@ -423,35 +422,89 @@ function updateSheet(data) {
     throw new Error('updateSheet error: week_start_date is missing. Full data: ' + JSON.stringify(data));
   }
 
+  // 1. Find Week Block using Hash Map Lookup (O(1) after O(N) indexing)
   const targetDate = parseMmDdYyyy(data.week_start_date);
-  const match = findFirstDateMatch(sheet, targetDate);
+  targetDate.setHours(0, 0, 0, 0);
+
+  const datesMap = getDatesMap_(sheet);
+  const match = datesMap.get(targetDate.getTime());
+
   Logger.log('updateSheet:TARGET DATE: ' + targetDate.toISOString());
-  Logger.log('updateSheet:MATCH: ' + JSON.stringify(match));
+  Logger.log('updateSheet:MATCH: ' + (match ? JSON.stringify(match) : 'null'));
 
   if (!match) {
     return 'Error: Could not find week starting ' + data.week_start_date + ' in sheet "' + sheet.getName() + '".';
   }
 
   const startRow = match.row;
+  const lastRow = sheet.getLastRow();
+
+  // 2. Index Habit Rows for O(1) Lookup
+  // Read Column A (Habit Names) from startRow to end of sheet
+  // This avoids calling createTextFinder inside the loop.
+  // We assume habits are in Column A (index 1).
+  const rowsToCheck = lastRow - startRow + 1;
+
+  // Limit scan to e.g. 30 rows to avoid scanning thousands of rows if the sheet is huge? 
+  // For safety, let's scan 30 rows which is plenty for a habit list. 
+  // Or just scan to bottom IF it's reasonable. Given the structure, a week block is small.
+  // Let's stick to scanning 30 rows down from the date header.
+  const searchRows = Math.min(rowsToCheck, 30);
+
+  const habitColumnValues = sheet.getRange(startRow, 1, searchRows, 1).getValues();
+  const habitRowMap = new Map(); // "Habit Name" -> Spreadsheet Row Index
+
+  // Scan Column A (Habit Names) from startRow to end of sheet
+  // This avoids calling createTextFinder inside the loop.
+  //
+  // The spreadsheet is structured as follows:
+  //
+  // col ->       A              B       C       D     ...
+  // row╭──────────────────────────────────────────────────╮
+  //  3 │                   │ Week # │  Sun  │  Mon  │ ... │ <- first week block of the year (header 1)
+  //  4 │  Habit            │    1   | 12/28 │ 12/29 │ ... │ <- (header 2)
+  //  5 │  Weight (lbs)     │        | 185.2 │ 184.9 │ ... │ <- Habit 1 for week 1
+  //  6 │  Meds/Supplements │    1   │   0   │   0   │ ... │ <- Habit 2 for week 1
+  //  7 │  Opto-kinetic     │    1   │   1   │   1   │ ... │ <- Habit 3 for week 1
+  //  8 │  Flossing         │        │   1   │   1   │ ... │ <- Habit 4 for week 1
+  //  9 │                   │        │       │       │ ... │ <- empty line between weeks
+  // 10 │                   │ Week # │  Sun  │  Mon  │ ... │ <- next week block (week 2, header 1)
+  // 12 │   Habit           │    2   │ 01/04 │ 01/05 │ ... │ <- (week 2, header 2)
+  // 14 │   Weight (lbs)    │        │ 183.7 │ 184.2 │ ... │ <- Habit 1 for week 2
+  // .. │   ...             │        │       │       │ ... │ <- etc
+  //    ╰──────────────────────────────────────────────────╯
+  for (let i = 0; i < habitColumnValues.length; i++) {
+    const val = habitColumnValues[i][0];
+
+    // Case 1: Found a habit name
+    if (val && typeof val === 'string' && val !== "") {
+      habitRowMap.set(val, startRow + i);
+    }
+    // Case 2: Found an empty row
+    else if (!val || val === "") {
+      // IF we have already collected habits, this empty row marks the end of the block.
+      if (habitRowMap.size > 0) {
+        break;
+      }
+      // IF we haven't found any habits yet, this might be a header row or spacer 
+      // above the habits (e.g. if the date match was on the 'Sun/Mon' header row).
+      // So we continue scanning.
+    }
+  }
 
   let updates = 0;
 
-  const startColumn = 1;
-  const habitColumnIndex = 1;
-  const lastRow = sheet.getLastRow();
-  const rowCount = lastRow - startRow + 1;
-  const searchRange = sheet.getRange(startRow, startColumn, rowCount, habitColumnIndex);
-
+  // 3. Update values
   data.data.forEach(item => {
-    const habitFinder = searchRange.createTextFinder(item.habit);
-    const habitCell = habitFinder.findNext();
+    const r = habitRowMap.get(item.habit);
 
-    if (habitCell) {
-      const r = habitCell.getRow();
+    if (r) {
       let rowValues = item.values || [];
+      // Ensure we have exactly 7 items
       if (rowValues.length > 7) rowValues = rowValues.slice(0, 7);
       while (rowValues.length < 7) rowValues.push(null);
 
+      // Write 7 days (Col C to I)
       sheet.getRange(r, 3, 1, 7).setValues([rowValues]); // C–I
       updates++;
     }
