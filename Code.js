@@ -7,7 +7,7 @@
  * Current version matching the Google Apps Deployment version.
  * Manually update immediate before deployment to keep in sync.
  */
-const APP_VERSION = '0.24';
+const APP_VERSION = '0.25';
 
 /*
  * Habit Grid → JSON via Gemini
@@ -460,7 +460,7 @@ function updateSheet(data) {
   // The spreadsheet is structured as follows:
   //
   // col ->       A              B       C       D     ...
-  // row╭──────────────────────────────────────────────────╮
+  // row╭───────────────────┬────────┬───────┬───────┬─────╮
   //  3 │                   │ Week # │  Sun  │  Mon  │ ... │ <- first week block of the year (header 1)
   //  4 │  Habit            │    1   | 12/28 │ 12/29 │ ... │ <- (header 2)
   //  5 │  Weight (lbs)     │        | 185.2 │ 184.9 │ ... │ <- Habit 1 for week 1
@@ -472,13 +472,13 @@ function updateSheet(data) {
   // 12 │   Habit           │    2   │ 01/04 │ 01/05 │ ... │ <- (week 2, header 2)
   // 14 │   Weight (lbs)    │        │ 183.7 │ 184.2 │ ... │ <- Habit 1 for week 2
   // .. │   ...             │        │       │       │ ... │ <- etc
-  //    ╰──────────────────────────────────────────────────╯
+  //    ╰───────────────────┴────────┴───────┴───────┴────╯
   for (let i = 0; i < habitColumnValues.length; i++) {
     const val = habitColumnValues[i][0];
 
     // Case 1: Found a habit name
     if (val && typeof val === 'string' && val !== "") {
-      habitRowMap.set(val, startRow + i);
+      habitRowMap.set(val.toUpperCase(), startRow + i);
     }
     // Case 2: Found an empty row
     else if (!val || val === "") {
@@ -496,7 +496,7 @@ function updateSheet(data) {
 
   // 3. Update values
   data.data.forEach(item => {
-    const r = habitRowMap.get(item.habit);
+    const r = habitRowMap.get(item.habit ? item.habit.toUpperCase() : "");
 
     if (r) {
       let rowValues = item.values || [];
